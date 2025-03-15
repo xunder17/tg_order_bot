@@ -1,4 +1,40 @@
+# Файлы и папки, которые создаёт Python при компиляции
 __pycache__/
 *.py[cod]
-*.env
+
+# Виртуальное окружение
 venv/
+.venv/
+ENV/
+env/
+env.bak/
+
+# Файл с переменными окружения (BOT_TOKEN, DATABASE_URL и т.д.)
+.env
+
+# Локальные базы данных SQLite
+database.db
+*.sqlite
+*.sqlite3
+
+# Логи
+*.log
+logs/
+
+# IDE и системные файлы
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Сборки и дистрибутивы (если вдруг есть)
+build/
+dist/
+*.egg-info
+*.egg
+*.wheel
+
+# Кэшные папки тестов (при использовании pytest, coverage и т.п.)
+htmlcov/
+.tox/
+coverage.xml
