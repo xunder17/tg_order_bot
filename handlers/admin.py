@@ -16,6 +16,9 @@ from sqlalchemy import delete
 from db import async_sessionmaker, Order, User
 from config import ADMIN_IDS
 from states import AdminStates
+from zoneinfo import ZoneInfo
+
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 router = Router()
 
@@ -155,8 +158,10 @@ async def display_orders_page(callback: types.CallbackQuery, state: FSMContext):
 
     builder = InlineKeyboardBuilder()
     for order in current_orders:
+        # Исправление времени с учетом часового пояса Москвы
+        created_at_moscow = order.created_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(MOSCOW_TZ)
         builder.button(
-            text=f"#{order.id} - {order.status} ({order.created_at.strftime('%Y-%m-%d %H:%M')})",
+            text=f"#{order.id} - {order.status} ({created_at_moscow.strftime('%Y-%m-%d %H:%M')})",
             callback_data=f"order_detail_{order.id}"
         )
 
@@ -231,15 +236,19 @@ async def order_detail(callback: types.CallbackQuery):
     if order.user and order.user.username:
         user_info += f"▪ Тег: @{order.user.username}\n"
 
+    # Исправление времени с учетом часового пояса Москвы
+    created_at_moscow = order.created_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(MOSCOW_TZ)
+    completed_at_moscow = order.completed_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(MOSCOW_TZ) if order.completed_at else None
+
     await callback.message.edit_text(
         f"<b>📄 Заявка #{order.id}</b>\n"
         f"{user_info}"
         f"▪ Контакты: {order.user.phone if order.user else 'N/A'}\n"
         f"▪ Время: {order.preferred_time}\n"
         f"▪ Статус: {status_text}\n"
-        f"▪ Время создания: {order.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+        f"▪ Время создания: {created_at_moscow.strftime('%Y-%m-%d %H:%M')}\n"
         f"▪ Время изменения статуса: "
-        f"{order.completed_at.strftime('%Y-%m-%d %H:%M') if order.completed_at else 'Не изменялся'}",
+        f"{completed_at_moscow.strftime('%Y-%m-%d %H:%M') if completed_at_moscow else 'Не изменялся'}",
         parse_mode="HTML",
         reply_markup=status_buttons.as_markup()
     )
