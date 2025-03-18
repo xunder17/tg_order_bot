@@ -27,55 +27,13 @@ def main_menu_keyboard() -> types.ReplyKeyboardMarkup:
 
 @router.message(lambda message: "Оформить заказ" in message.text)
 async def make_order(message: types.Message, state: FSMContext):
-    """
-    Шаг 1: Выбираем, на какой день оформить заказ - 'Сегодня' или 'Завтра'.
-    """
-    builder = InlineKeyboardBuilder()
-    builder.button(text="Сегодня", callback_data="choose_day_today")
-    builder.button(text="Завтра", callback_data="choose_day_tomorrow")
-    builder.adjust(2)
-
-    await message.answer(
-        "Выбери, на какой день хочешь оформить заказ:",
-        reply_markup=builder.as_markup()
-    )
-    await state.set_state(OrderStates.waiting_for_day)
-
-
-@router.callback_query(OrderStates.waiting_for_day, F.data.startswith("choose_day_"))
-async def day_chosen(callback: types.CallbackQuery, state: FSMContext):
-    """
-    Шаг 2: Определяем день доставки на основе времени нажатия кнопки.
-    Если до 11:30 по Москве - сегодня, если после - завтра.
-    """
-    now = datetime.now(MOSCOW_TZ)
-    cutoff_time = time(11, 30)
-    current_time = now.time()
-
-    choice = callback.data.split("_")[-1]
-    
-    # Автоматическое определение дня доставки
-    if current_time <= cutoff_time:
-        delivery_day = "Сегодня"
-        pickup_text = "Мы заберём оборудование сегодня в ближайшее время!"
-    else:
-        delivery_day = "Завтра"
-        pickup_text = "Мы заберём оборудование завтра с 8:00 до 12:00."
-
-    # Если пользователь выбрал "Завтра", то всегда завтра, независимо от времени
-    if choice == "tomorrow":
-        delivery_day = "Завтра"
-        pickup_text = "Мы заберём оборудование завтра с 8:00 до 12:00."
-
-    await state.update_data(chosen_day=delivery_day, pickup_text=pickup_text)
-
     builder = InlineKeyboardBuilder()
     builder.button(text="Подтвердить", callback_data="confirm_order")
     builder.button(text="Отмена", callback_data="cancel_order")
     builder.adjust(2)
 
-    await callback.message.edit_text(
-        f"{pickup_text}\nПодтвердить заказ?",
+    await message.answer(
+        "Подтвердите оформление заказа:",
         reply_markup=builder.as_markup()
     )
     await state.set_state(OrderStates.confirm_order)
@@ -83,22 +41,25 @@ async def day_chosen(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(OrderStates.confirm_order, F.data == "cancel_order")
 async def cancel_order_handler(callback: types.CallbackQuery, state: FSMContext):
-    """
-    Отмена оформления заказа.
-    """
     await callback.message.edit_text("Оформление заказа отменено.")
     await state.clear()
 
 
 @router.callback_query(OrderStates.confirm_order, F.data == "confirm_order")
 async def confirm_order_handler(callback: types.CallbackQuery, state: FSMContext):
-    """
-    Шаг 3: Сохраняем заказ в БД с автоматически определённым временем.
-    """
-    data = await state.get_data()
-    delivery_day = data.get("chosen_day", "Завтра")
-    pickup_text = data.get("pickup_text", "Мы заберём оборудование завтра с 8:00 до 12:00.")
-    preferred_time = delivery_day  # Время теперь просто день, без HH:MM
+    now = datetime.now(MOSCOW_TZ)
+    cutoff_time = time(11, 30)
+    current_time = now.time()
+
+    # Определяем время доставки в зависимости от текущего времени по Москве
+    if current_time <= cutoff_time:
+        delivery_day = "Сегодня"
+        pickup_text = "Мы заберём оборудование сегодня в ближайшее время!"
+    else:
+        delivery_day = "Завтра"
+        pickup_text = "Мы заберём оборудование завтра с 8:00 до 12:00."
+
+    preferred_time = delivery_day
 
     async with async_sessionmaker() as session:
         user_in_db = await session.execute(
@@ -123,9 +84,8 @@ async def confirm_order_handler(callback: types.CallbackQuery, state: FSMContext
         session.add(new_order)
         await session.commit()
         await session.refresh(new_order)
-        order_id = new_order.id  # Номер заявки сохраняется, но не показывается пользователю
+        order_id = new_order.id
 
-    now = datetime.now(MOSCOW_TZ)
     await callback.message.edit_text(
         f"✅ <b>Заявка успешно оформлена!</b>\n\n"
         f"🚚 {pickup_text}\n\n"

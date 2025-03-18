@@ -32,10 +32,6 @@ def admin_main_keyboard() -> types.InlineKeyboardMarkup:
 
 
 def admin_orders_button() -> types.InlineKeyboardMarkup:
-    """
-    Возвращает inline-клавиатуру с одной кнопкой "Список заявок".
-    При нажатии будет вызван тот же самый колбэк, что в admin_main_keyboard().
-    """
     builder = InlineKeyboardBuilder()
     builder.button(text="Список заявок", callback_data="admin_orders")
     builder.adjust(1)
@@ -70,6 +66,7 @@ async def start_add_order(callback: types.CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(AdminStates.waiting_user_name)
+
 
 @router.message(AdminStates.waiting_user_name)
 async def process_user_name(message: types.Message, state: FSMContext):
@@ -146,6 +143,7 @@ async def show_orders(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(all_orders=orders, current_page=0)
     await display_orders_page(callback, state)
 
+
 async def display_orders_page(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     all_orders = data.get("all_orders", [])
@@ -196,10 +194,6 @@ async def next_page(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("order_detail_"))
 async def order_detail(callback: types.CallbackQuery):
-    """
-    Показывает детальную информацию о заявке
-    и предоставляет кнопки изменения статуса.
-    """
     order_id_str = callback.data.split("_")[-1]
     if not order_id_str.isdigit():
         await callback.answer("Неверный формат ID заявки.")
@@ -253,10 +247,6 @@ async def order_detail(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("set_status_"))
 async def set_order_status(callback: types.CallbackQuery):
-    """
-    Устанавливает новый статус для заявки.
-    Если статус меняется на 'Исполнено', выставляем completed_at.
-    """
     try:
         parts = callback.data.split("_")
         if len(parts) < 3:
@@ -276,7 +266,6 @@ async def set_order_status(callback: types.CallbackQuery):
 
             if new_status == "Исполнено" and not order.completed_at:
                 order.completed_at = datetime.utcnow()
-
             else:
                 order.completed_at = None
 
@@ -299,10 +288,6 @@ async def set_order_status(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin_help")
 async def show_admin_help(callback: types.CallbackQuery):
-    """
-    Обработчик для кнопки "Помощь" в админ-панели.
-    Показывает администратору справку и список команд.
-    """
     help_text = (
         "🛠 *Справка для администратора*\n\n"
         "Здесь вы можете управлять заявками и пользователями.\n\n"
@@ -325,15 +310,12 @@ async def show_admin_help(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin_back")
 async def back_to_admin_menu(callback: types.CallbackQuery):
-    """
-    Обработчик для кнопки "Назад" в админ-панели.
-    Возвращает пользователя в главное меню админ-панели.
-    """
     await callback.message.edit_text(
         "🔐 *Админ-панель*",
         parse_mode="Markdown",
         reply_markup=admin_main_keyboard()
     )
+
 
 async def cleanup_old_orders():
     try:

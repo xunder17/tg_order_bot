@@ -3,11 +3,6 @@ from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiogram.types import Message, TelegramObject
 
 class AntiSpamMiddleware(BaseMiddleware):
-    """
-    Middleware, которое отслеживает частоту сообщений от пользователя.
-    Если за заданное окно времени (time_window) пользователь отправляет более
-    max_messages сообщений, ему отправляется предупреждение, а сообщение не передаётся дальше.
-    """
     def __init__(self, time_window: float = 5, max_messages: int = 3):
         self.time_window = time_window
         self.max_messages = max_messages

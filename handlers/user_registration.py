@@ -33,7 +33,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
         )
         user = result.scalar_one_or_none()
     if user is None:
-        # Создаем inline-клавиатуру с кнопкой "Старт"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Старт", callback_data="start_work")]
         ])
@@ -44,15 +43,15 @@ async def cmd_start(message: types.Message, state: FSMContext):
         )
     else:
         await message.answer(
-            "👋 Снова привет! Воспользуйся меню!",
+            "👋 Снова привет! Воспользуйтесь меню!",
             reply_markup=main_menu_keyboard(),
             parse_mode="HTML"
         )
 
+
 @router.callback_query(lambda callback: callback.data == "start_work")
 async def start_work_handler(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()  # Убираем "часики" в Telegram
-    # Обновляем сообщение с инструкцией для регистрации
+    await callback.answer()
     await callback.message.edit_text(
         "Пожалуйста, введите своё имя:",
         parse_mode="HTML"
@@ -79,7 +78,7 @@ async def reg_get_phone(message: types.Message, state: FSMContext):
         await message.answer("❌ Неверный формат номера. Используйте: +79991234567 (от 7 до 15 цифр).")
         return
     await state.update_data(phone=phone)
-    await message.answer("Введи адрес:")
+    await message.answer("Введите адрес:")
     await state.set_state(RegistrationStates.waiting_for_address)
 
 
@@ -90,7 +89,7 @@ async def reg_get_name(message: types.Message, state: FSMContext):
         await message.answer("❌ Имя должно быть от 2 до 50 символов, только буквы, пробелы или дефис.")
         return
     await state.update_data(name=name)
-    await message.answer("Отлично! Теперь введи номер телефона:")
+    await message.answer("Отлично! Теперь введите номер телефона:")
     await state.set_state(RegistrationStates.waiting_for_phone)
 
 
@@ -101,7 +100,7 @@ async def reg_get_address(message: types.Message, state: FSMContext):
         await message.answer("❌ Адрес должен быть от 5 до 200 символов.")
         return
     await state.update_data(address=address)
-    await message.answer("Укажи название организации (если есть). Если нет, напиши 'Нет':")
+    await message.answer("Укажите название организации (если есть). Если нет, напишите 'Нет':")
     await state.set_state(RegistrationStates.waiting_for_organization)
 
 
@@ -121,7 +120,7 @@ async def reg_get_organization(message: types.Message, state: FSMContext):
             name=name,
             phone=phone,
             address=address,
-            organization = "Нет" if organization.lower() == "нет" else organization
+            organization="Нет" if organization.lower() == "нет" else organization
         )
         session.add(new_user)
         await session.commit()

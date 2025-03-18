@@ -12,10 +12,6 @@ INACTIVITY_TIMEOUT = timedelta(minutes=10)
 
 class InactivityMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: TelegramObject, data: dict):
-        """
-        Middleware для проверки активности пользователя.
-        Если он не писал более 10 минут — сбрасываем состояние и возвращаем в главное меню.
-        """
         if isinstance(event, Message):
             state: FSMContext = data.get("state")
 
