@@ -27,14 +27,36 @@ def main_menu_keyboard() -> types.ReplyKeyboardMarkup:
 
 @router.message(lambda message: "Оформить заказ" in message.text)
 async def make_order(message: types.Message, state: FSMContext):
+    # Get user data from database
+    async with async_sessionmaker() as session:
+        user_in_db = await session.execute(
+            select(User).where(User.telegram_id == message.from_user.id)
+        )
+        user = user_in_db.scalar_one_or_none()
+
+    # Prepare formatted user info
+    user_info = "📋 <b>Ваши данные:</b>\n\n"
+    if user:
+        user_info += f"👤 <b>Имя:</b> {user.name if user.name else 'Не указано'}\n"
+        user_info += f"📞 <b>Телефон:</b> {user.phone if user.phone else 'Не указано'}\n"
+        user_info += f"🏠 <b>Адрес:</b> {user.address if user.address else 'Не указано'}\n"
+        user_info += f"🏢 <b>Организация:</b> {user.organization if user.organization else 'Не указано'}\n"
+    else:
+        user_info += "⚠️ Данные пользователя не найдены\n"
+
+    # Create keyboard
     builder = InlineKeyboardBuilder()
-    builder.button(text="Подтвердить", callback_data="confirm_order")
-    builder.button(text="Отмена", callback_data="cancel_order")
+    builder.button(text="✅ Подтвердить", callback_data="confirm_order")
+    builder.button(text="❌ Отмена", callback_data="cancel_order")
     builder.adjust(2)
 
+    # Send formatted message
     await message.answer(
-        "Подтвердите оформление заказа:",
-        reply_markup=builder.as_markup()
+        f"🛒 <b>Оформление заказа</b>\n\n"
+        f"{user_info}\n"
+        f"Проверьте данные и подтвердите заказ:",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
     )
     await state.set_state(OrderStates.confirm_order)
 
