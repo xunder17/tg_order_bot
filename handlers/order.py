@@ -45,65 +45,37 @@ async def make_order(message: types.Message, state: FSMContext):
 @router.callback_query(OrderStates.waiting_for_day, F.data.startswith("choose_day_"))
 async def day_chosen(callback: types.CallbackQuery, state: FSMContext):
     """
-    Шаг 2: Сохраняем день в state. 
-    Если 'Сегодня' - идём к вводу точного времени (HH:MM).
-    Если 'Завтра' - сразу показываем подтверждение (если хотим).
+    Шаг 2: Определяем день доставки на основе времени нажатия кнопки.
+    Если до 11:30 по Москве - сегодня, если после - завтра.
     """
+    now = datetime.now(MOSCOW_TZ)
+    cutoff_time = time(11, 30)
+    current_time = now.time()
+
     choice = callback.data.split("_")[-1]
-    if choice == "today":
-        await state.update_data(chosen_day="Сегодня")
-        await callback.message.edit_text(
-            "Введите время в формате HH:MM (например, 09:00)."
-        )
-        await state.set_state(OrderStates.waiting_for_time)
-
-    elif choice == "tomorrow":
-        await state.update_data(chosen_day="Завтра")
-        builder = InlineKeyboardBuilder()
-        builder.button(text="Подтвердить", callback_data="confirm_order")
-        builder.button(text="Отмена", callback_data="cancel_order")
-        builder.adjust(2)
-
-        await callback.message.edit_text(
-            "Вы выбрали: Завтра\nПодтвердить заказ?",
-            reply_markup=builder.as_markup()
-        )
-        await state.set_state(OrderStates.confirm_order)
-
+    
+    # Автоматическое определение дня доставки
+    if current_time <= cutoff_time:
+        delivery_day = "Сегодня"
+        pickup_text = "Мы заберём оборудование сегодня в ближайшее время!"
     else:
-        await callback.answer("Некорректный выбор. Попробуйте ещё раз.")
+        delivery_day = "Завтра"
+        pickup_text = "Мы заберём оборудование завтра с 8:00 до 12:00."
 
+    # Если пользователь выбрал "Завтра", то всегда завтра, независимо от времени
+    if choice == "tomorrow":
+        delivery_day = "Завтра"
+        pickup_text = "Мы заберём оборудование завтра с 8:00 до 12:00."
 
-@router.message(OrderStates.waiting_for_time)
-async def get_time(message: types.Message, state: FSMContext):
-    """
-    Шаг 3 (только если выбрали 'Сегодня'): пользователь вводит время (HH:MM).
-    Проверяем корректность, иначе просим заново.
-    """
-    time_text = message.text.strip()
-    parts = time_text.split(":")
-    if len(parts) != 2 or not all(p.isdigit() for p in parts):
-        await message.answer("❌ Неверный формат. Введите время в формате HH:MM.")
-        return
-
-    h, m = map(int, parts)
-    if h < 0 or h > 23 or m < 0 or m > 59:
-        await message.answer("❌ Неверное время. Часы должны быть 0–23, минуты 0–59.")
-        return
-
-    chosen_time = f"{h:02d}:{m:02d}"
-    data = await state.get_data()
-    day = data.get("chosen_day", "Сегодня")
-    preferred_time = f"{day}, {chosen_time}"
-    await state.update_data(preferred_time=preferred_time)
+    await state.update_data(chosen_day=delivery_day, pickup_text=pickup_text)
 
     builder = InlineKeyboardBuilder()
     builder.button(text="Подтвердить", callback_data="confirm_order")
     builder.button(text="Отмена", callback_data="cancel_order")
     builder.adjust(2)
 
-    await message.answer(
-        f"Вы выбрали: {preferred_time}\nПодтвердить заказ?",
+    await callback.message.edit_text(
+        f"{pickup_text}\nПодтвердить заказ?",
         reply_markup=builder.as_markup()
     )
     await state.set_state(OrderStates.confirm_order)
@@ -121,20 +93,12 @@ async def cancel_order_handler(callback: types.CallbackQuery, state: FSMContext)
 @router.callback_query(OrderStates.confirm_order, F.data == "confirm_order")
 async def confirm_order_handler(callback: types.CallbackQuery, state: FSMContext):
     """
-    Шаг 4: сохраняем заказ в БД и проверяем,
-    если "Сегодня" – сравниваем введённое время (HH:MM) с порогом 11:30.
-    Если "Завтра" – всегда "завтра с 8 до 12".
+    Шаг 3: Сохраняем заказ в БД с автоматически определённым временем.
     """
     data = await state.get_data()
-    preferred_time = data.get("preferred_time", "")
-
-    if "," in preferred_time:
-        day_part, time_part = preferred_time.split(",")
-        day_part = day_part.strip()
-        time_part = time_part.strip()
-    else:
-        day_part = preferred_time.strip()
-        time_part = None
+    delivery_day = data.get("chosen_day", "Завтра")
+    pickup_text = data.get("pickup_text", "Мы заберём оборудование завтра с 8:00 до 12:00.")
+    preferred_time = delivery_day  # Время теперь просто день, без HH:MM
 
     async with async_sessionmaker() as session:
         user_in_db = await session.execute(
@@ -159,31 +123,16 @@ async def confirm_order_handler(callback: types.CallbackQuery, state: FSMContext
         session.add(new_order)
         await session.commit()
         await session.refresh(new_order)
-        order_id = new_order.id
+        order_id = new_order.id  # Номер заявки сохраняется, но не показывается пользователю
 
-    if day_part == "Сегодня":
-        h_str, m_str = time_part.split(":")
-        h, m = int(h_str), int(m_str)
-        cutoff = time(11, 30)
-        user_time = time(h, m)
-
-        if user_time <= cutoff:
-            pickup_text = "Мы заберём оборудование сегодня в ближайшее время!"
-        else:
-            pickup_text = "Мы заберём оборудование завтра с 8:00 до 12:00."
-    else:
-        pickup_text = "Мы заберём оборудование завтра с 8:00 до 12:00."
-
+    now = datetime.now(MOSCOW_TZ)
     await callback.message.edit_text(
-        f"✅ <b>Заявка #{order_id}</b> успешно оформлена!\n\n"
-        f"📅 <b>Время заказа:</b> {preferred_time}\n"
+        f"✅ <b>Заявка успешно оформлена!</b>\n\n"
         f"🚚 {pickup_text}\n\n"
         f"Спасибо за выбор нашего сервиса!",
         parse_mode="HTML"
     )
 
-    from datetime import datetime
-    now = datetime.now(MOSCOW_TZ)
     for admin_id_str in ADMIN_IDS:
         try:
             admin_id = int(admin_id_str)
