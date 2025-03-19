@@ -18,10 +18,6 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 async def main_menu_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
-    """
-    Создает главное меню с кнопками.
-    Кнопка "❌ Отменить заказ" отображается только при наличии активного заказа.
-    """
     kb = ReplyKeyboardBuilder()
     kb.button(text="🛒 Оформить заказ")
     kb.button(text="✉️ Написать напрямую")
@@ -29,7 +25,7 @@ async def main_menu_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
 
     # Проверяем наличие активного заказа
     async with async_sessionmaker() as session:
-        active_orders = await session.execute(
+        active_order = await session.execute(
             select(Order)
             .join(User)
             .where(
@@ -37,7 +33,7 @@ async def main_menu_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
                 Order.status != "Исполнено"
             )
         )
-        if active_orders.scalars().first():
+        if active_order.scalar_one_or_none():
             kb.button(text="❌ Отменить заказ")
 
     kb.adjust(1)
@@ -92,15 +88,25 @@ async def confirm_order_handler(callback: types.CallbackQuery, state: FSMContext
     cutoff_time = time(11, 30)
     current_time = now.time()
 
-    # Определяем время доставки
-    if current_time <= cutoff_time:
-        delivery_day = "Сегодня"
-        pickup_text = "Мы заберём оборудование сегодня в ближайшее время!"
-    else:
-        delivery_day = "Завтра"
-        pickup_text = "Мы заберём оборудование завтра с 8:00 до 12:00."
-
     async with async_sessionmaker() as session:
+        # Проверяем, есть ли у пользователя активный заказ
+        active_order = await session.execute(
+            select(Order)
+            .join(User)
+            .where(
+                User.telegram_id == callback.from_user.id,
+                Order.status != "Исполнено"
+            )
+        )
+        active_order = active_order.scalar_one_or_none()
+
+        if active_order:
+            await callback.message.edit_text(
+                "❌ У вас уже есть активный заказ. Вы не можете оформить новый, пока не завершите текущий.",
+                parse_mode="HTML"
+            )
+            return
+
         # Получаем или создаем пользователя
         user = await session.execute(
             select(User).where(User.telegram_id == callback.from_user.id)
@@ -112,10 +118,18 @@ async def confirm_order_handler(callback: types.CallbackQuery, state: FSMContext
             await state.clear()
             return
 
-        # Обновляем username если изменился
+        # Обновляем username, если изменился
         if callback.from_user.username != user.username:
             user.username = callback.from_user.username
             await session.commit()
+
+        # Определяем время доставки
+        if current_time <= cutoff_time:
+            delivery_day = "Сегодня"
+            pickup_text = "Мы заберём оборудование сегодня в ближайшее время!"
+        else:
+            delivery_day = "Завтра"
+            pickup_text = "Мы заберём оборудование завтра с 8:00 до 12:00."
 
         # Создаем новый заказ
         new_order = Order(
@@ -347,8 +361,8 @@ async def edit_data_back(message: types.Message, state: FSMContext):
 async def cancel_order_by_user(message: types.Message):
     async with async_sessionmaker() as session:
         try:
-            # Ищем ВСЕ активные заказы
-            orders = await session.execute(
+            # Ищем активный заказ пользователя
+            active_order = await session.execute(
                 select(Order)
                 .join(User)
                 .where(
@@ -356,10 +370,10 @@ async def cancel_order_by_user(message: types.Message):
                     Order.status != "Исполнено"
                 )
             )
-            orders = orders.scalars().all()
+            active_order = active_order.scalar_one_or_none()
 
-            if not orders:
-                await message.answer("❌ Нет активных заказов для отмены")
+            if not active_order:
+                await message.answer("❌ У вас нет активных заказов для отмены.")
                 return
 
             # Получаем данные пользователя
@@ -372,14 +386,13 @@ async def cancel_order_by_user(message: types.Message):
                 await message.answer("❌ Ошибка: данные пользователя не найдены")
                 return
 
-            # Удаляем все активные заказы
-            for order in orders:
-                await session.delete(order)
+            # Удаляем активный заказ
+            await session.delete(active_order)
             await session.commit()
 
             # Уведомление пользователя
             await message.answer(
-                "✅ Все ваши активные заказы отменены!",
+                "✅ Ваш заказ успешно отменён!",
                 reply_markup=await main_menu_keyboard(message.from_user.id)
             )
 
@@ -388,8 +401,7 @@ async def cancel_order_by_user(message: types.Message):
                 try:
                     await message.bot.send_message(
                         admin_id,
-                        f"⚠️ Пользователь @{message.from_user.username} "
-                        f"отменил {len(orders)} заказ(а)!\n"
+                        f"⚠️ Пользователь @{message.from_user.username} отменил заказ.\n"
                         f"👤 Имя: {user.name}\n"
                         f"📞 Телефон: {user.phone}\n"
                         f"🕒 Время: {datetime.now(MOSCOW_TZ).strftime('%d.%m.%Y %H:%M')}"
