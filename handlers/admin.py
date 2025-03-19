@@ -212,18 +212,46 @@ async def order_detail(callback: types.CallbackQuery):
             await callback.message.edit_text("Заявка не найдена или была удалена.")
             return
 
+    # Создаем две отдельных клавиатуры
     status_buttons = InlineKeyboardBuilder()
+    control_buttons = InlineKeyboardBuilder()
+    
     current_status = order.status
 
+    # Кнопки для смены статуса
     for status in POSSIBLE_STATUSES:
         if status != current_status:
             status_buttons.button(
                 text=status,
                 callback_data=f"set_status_{order.id}_{status}"
             )
+    
+    # Кнопки управления
+    control_buttons.button(text="🗑 Удалить", callback_data=f"confirm_delete_{order.id}")
+    control_buttons.button(text="↩ К списку", callback_data="admin_orders")
+    control_buttons.adjust(2)
 
-    status_buttons.button(text="↩ Назад", callback_data="admin_orders")
-    status_buttons.adjust(2)
+    # Объединяем клавиатуры
+    full_keyboard = InlineKeyboardBuilder()
+    full_keyboard.attach(status_buttons)
+    full_keyboard.attach(control_buttons)
+    full_keyboard.adjust(2, repeat=True)
+
+    # Форматирование информации о пользователе
+    user_info = (
+        f"▪ Имя: {order.user.name if order.user else 'N/A'}\n"
+        f"▪ Телефон: {order.user.phone if order.user else 'N/A'}\n"
+        f"▪ Адрес: {order.user.address if order.user else 'N/A'}\n"
+        f"▪ Организация: {order.user.organization if order.user else 'N/A'}\n"
+    )
+
+    # Форматирование времени с учетом часового пояса
+    created_at_moscow = order.created_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(MOSCOW_TZ)
+    completed_time = (
+        order.completed_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(MOSCOW_TZ).strftime('%d.%m.%Y %H:%M')
+        if order.completed_at
+        else "Не завершена"
+    )
 
     status_text = {
         "Новая (От пользователя)": "🟡 Новая (От пользователя)",
@@ -232,26 +260,50 @@ async def order_detail(callback: types.CallbackQuery):
         "Исполнено": "🔵 Исполнено"
     }.get(order.status, order.status)
 
-    user_info = f"▪ Пользователь: {order.user.name if order.user else 'N/A'}\n"
-    if order.user and order.user.username:
-        user_info += f"▪ Тег: @{order.user.username}\n"
-
-    # Исправление времени с учетом часового пояса Москвы
-    created_at_moscow = order.created_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(MOSCOW_TZ)
-    completed_at_moscow = order.completed_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(MOSCOW_TZ) if order.completed_at else None
-
     await callback.message.edit_text(
-        f"<b>📄 Заявка #{order.id}</b>\n"
-        f"{user_info}"
-        f"▪ Контакты: {order.user.phone if order.user else 'N/A'}\n"
-        f"▪ Время: {order.preferred_time}\n"
+        f"<b>📄 Заявка #{order.id}</b>\n\n"
+        f"<b>👤 Данные клиента:</b>\n{user_info}\n"
+        f"<b>📦 Детали заказа:</b>\n"
+        f"▪ Предпочитаемое время: {order.preferred_time}\n"
         f"▪ Статус: {status_text}\n"
-        f"▪ Время создания: {created_at_moscow.strftime('%Y-%m-%d %H:%M')}\n"
-        f"▪ Время изменения статуса: "
-        f"{completed_at_moscow.strftime('%Y-%m-%d %H:%M') if completed_at_moscow else 'Не изменялся'}",
+        f"▪ Создана: {created_at_moscow.strftime('%d.%m.%Y %H:%M')}\n"
+        f"▪ Завершена: {completed_time}",
         parse_mode="HTML",
-        reply_markup=status_buttons.as_markup()
+        reply_markup=full_keyboard.as_markup()
     )
+
+
+@router.callback_query(F.data.startswith("confirm_delete_"))
+async def confirm_delete(callback: types.CallbackQuery):
+    order_id = int(callback.data.split("_")[-1])
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, удалить", callback_data=f"delete_order_{order_id}")
+    builder.button(text="❌ Отмена", callback_data=f"order_detail_{order_id}")
+    builder.adjust(2)
+    
+    await callback.message.edit_text(
+        f"⚠️ Вы уверены, что хотите удалить заявку #{order_id}?",
+        reply_markup=builder.as_markup()
+    )
+
+
+@router.callback_query(F.data.startswith("delete_order_"))
+async def delete_order_handler(callback: types.CallbackQuery, state: FSMContext):
+    order_id = int(callback.data.split("_")[-1])
+    async with async_sessionmaker() as session:
+        order = await session.get(Order, order_id)
+        if order:
+            await session.delete(order)
+            await session.commit()
+    
+    # Уведомляем администратора
+    await callback.message.edit_text(
+        f"✅ Заявка #{order_id} успешно удалена!",
+        reply_markup=admin_orders_button()
+    )
+    
+    # Обновляем список заказов
+    await show_orders(callback, state)
 
 
 @router.callback_query(F.data.startswith("set_status_"))
@@ -324,6 +376,22 @@ async def back_to_admin_menu(callback: types.CallbackQuery):
         parse_mode="Markdown",
         reply_markup=admin_main_keyboard()
     )
+
+
+async def cleanup_old_orders():
+    try:
+        twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
+        async with async_sessionmaker() as session:
+            result = await session.execute(
+                delete(Order)
+                .where(Order.status == "Исполнено")
+                .where(Order.completed_at < twenty_four_hours_ago)
+            )
+            deleted_count = result.rowcount
+            await session.commit()
+            logging.info(f"Deleted {deleted_count} orders older than 24 hours.")
+    except Exception as e:
+        logging.error(f"Error during cleanup_old_orders: {e}")
 
 
 async def cleanup_old_orders():

@@ -10,31 +10,50 @@ from states import OrderStates, EditDataStates, DirectMessageStates
 from config import ADMIN_IDS
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
+import logging
 
 router = Router()
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
-def main_menu_keyboard() -> types.ReplyKeyboardMarkup:
+async def main_menu_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
+    """
+    Создает главное меню с кнопками.
+    Кнопка "❌ Отменить заказ" отображается только при наличии активного заказа.
+    """
     kb = ReplyKeyboardBuilder()
     kb.button(text="🛒 Оформить заказ")
     kb.button(text="✉️ Написать напрямую")
     kb.button(text="✏️ Изменить данные")
+
+    # Проверяем наличие активного заказа
+    async with async_sessionmaker() as session:
+        active_orders = await session.execute(
+            select(Order)
+            .join(User)
+            .where(
+                User.telegram_id == user_id,
+                Order.status != "Исполнено"
+            )
+        )
+        if active_orders.scalars().first():
+            kb.button(text="❌ Отменить заказ")
+
     kb.adjust(1)
     return kb.as_markup(resize_keyboard=True)
 
 
 @router.message(lambda message: "Оформить заказ" in message.text)
 async def make_order(message: types.Message, state: FSMContext):
-    # Get user data from database
+    # Получаем данные пользователя из базы данных
     async with async_sessionmaker() as session:
         user_in_db = await session.execute(
             select(User).where(User.telegram_id == message.from_user.id)
         )
         user = user_in_db.scalar_one_or_none()
 
-    # Prepare formatted user info
+    # Форматируем информацию о пользователе
     user_info = "📋 <b>Ваши данные:</b>\n\n"
     if user:
         user_info += f"👤 <b>Имя:</b> {user.name if user.name else 'Не указано'}\n"
@@ -44,13 +63,13 @@ async def make_order(message: types.Message, state: FSMContext):
     else:
         user_info += "⚠️ Данные пользователя не найдены\n"
 
-    # Create keyboard
+    # Создаем клавиатуру
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Подтвердить", callback_data="confirm_order")
     builder.button(text="❌ Отмена", callback_data="cancel_order")
     builder.adjust(2)
 
-    # Send formatted message
+    # Отправляем сообщение с данными
     await message.answer(
         f"🛒 <b>Оформление заказа</b>\n\n"
         f"{user_info}\n"
@@ -73,7 +92,7 @@ async def confirm_order_handler(callback: types.CallbackQuery, state: FSMContext
     cutoff_time = time(11, 30)
     current_time = now.time()
 
-    # Определяем время доставки в зависимости от текущего времени по Москве
+    # Определяем время доставки
     if current_time <= cutoff_time:
         delivery_day = "Сегодня"
         pickup_text = "Мы заберём оборудование сегодня в ближайшее время!"
@@ -81,40 +100,46 @@ async def confirm_order_handler(callback: types.CallbackQuery, state: FSMContext
         delivery_day = "Завтра"
         pickup_text = "Мы заберём оборудование завтра с 8:00 до 12:00."
 
-    preferred_time = delivery_day
-
     async with async_sessionmaker() as session:
-        user_in_db = await session.execute(
+        # Получаем или создаем пользователя
+        user = await session.execute(
             select(User).where(User.telegram_id == callback.from_user.id)
         )
-        user = user_in_db.scalar_one_or_none()
+        user = user.scalar_one_or_none()
 
         if not user:
-            await callback.message.edit_text("Ошибка: пользователь не найден в базе.")
+            await callback.message.edit_text("❌ Ошибка: пользователь не найден")
             await state.clear()
             return
 
-        if callback.from_user.username and user.username != callback.from_user.username:
+        # Обновляем username если изменился
+        if callback.from_user.username != user.username:
             user.username = callback.from_user.username
             await session.commit()
 
+        # Создаем новый заказ
         new_order = Order(
             user_id=user.id,
             status="Новая (От пользователя)",
-            preferred_time=preferred_time
+            preferred_time=delivery_day
         )
         session.add(new_order)
         await session.commit()
         await session.refresh(new_order)
-        order_id = new_order.id
 
+    # Отправляем обновленное меню с кнопкой отмены
     await callback.message.edit_text(
         f"✅ <b>Заявка успешно оформлена!</b>\n\n"
         f"🚚 {pickup_text}\n\n"
         f"Спасибо за выбор нашего сервиса!",
         parse_mode="HTML"
     )
+    await callback.message.answer(
+        "🏠 Вернул вас в главное меню.",
+        reply_markup=await main_menu_keyboard(callback.from_user.id)  # Принудительное обновление
+    )
 
+    # Уведомление администраторам
     for admin_id_str in ADMIN_IDS:
         try:
             admin_id = int(admin_id_str)
@@ -125,9 +150,9 @@ async def confirm_order_handler(callback: types.CallbackQuery, state: FSMContext
             await callback.bot.send_message(
                 admin_id,
                 text=(
-                    f"Новая заявка #{order_id}\n"
+                    f"Новая заявка #{new_order.id}\n"
                     f"От: @{callback.from_user.username}\n"
-                    f"Пользователь выбрал: {preferred_time}\n"
+                    f"Пользователь выбрал: {delivery_day}\n"
                     f"Оформлена в {now.strftime('%Y-%m-%d %H:%M')} по Москве\n"
                     f"Статус: Новая (От пользователя)\n\n"
                     f"{pickup_text}"
@@ -201,7 +226,7 @@ async def direct_message_finish(message: types.Message, state: FSMContext):
     await message.answer(
         "✅ <b>Ваше сообщение отправлено администратору.</b>\n"
         "Ожидайте, с вами свяжутся в ближайшее время!",
-        reply_markup=main_menu_keyboard(),
+        reply_markup=await main_menu_keyboard(user_id),  # Используем обновленную функцию
         parse_mode="HTML"
     )
     await state.clear()
@@ -242,7 +267,7 @@ async def edit_phone_finish(message: types.Message, state: FSMContext):
             user.phone = new_phone
             await session.commit()
 
-    await message.answer(f"📞 Телефон изменён на: {new_phone}", reply_markup=main_menu_keyboard())
+    await message.answer(f"📞 Телефон изменён на: {new_phone}", reply_markup=await main_menu_keyboard(message.from_user.id))
     await state.clear()
 
 
@@ -264,7 +289,7 @@ async def edit_address_finish(message: types.Message, state: FSMContext):
             user.address = new_address
             await session.commit()
 
-    await message.answer(f"🏠 Адрес изменён на: {new_address}", reply_markup=main_menu_keyboard())
+    await message.answer(f"🏠 Адрес изменён на: {new_address}", reply_markup=await main_menu_keyboard(message.from_user.id))
     await state.clear()
 
 
@@ -286,7 +311,7 @@ async def edit_name_finish(message: types.Message, state: FSMContext):
             user.name = new_name
             await session.commit()
 
-    await message.answer(f"👤 Имя изменено на: {new_name}", reply_markup=main_menu_keyboard())
+    await message.answer(f"👤 Имя изменено на: {new_name}", reply_markup=await main_menu_keyboard(message.from_user.id))
     await state.clear()
 
 
@@ -308,11 +333,70 @@ async def edit_organization_finish(message: types.Message, state: FSMContext):
             user.organization = new_organization
             await session.commit()
 
-    await message.answer(f"🏢 Организация изменена на: {new_organization}", reply_markup=main_menu_keyboard())
+    await message.answer(f"🏢 Организация изменена на: {new_organization}", reply_markup=await main_menu_keyboard(message.from_user.id))
     await state.clear()
 
 
 @router.message(EditDataStates.choose_field, F.text == "↩️ Назад")
 async def edit_data_back(message: types.Message, state: FSMContext):
-    await message.answer("🏠 Возвращаюсь в главное меню.", reply_markup=main_menu_keyboard())
+    await message.answer("🏠 Возвращаюсь в главное меню.", reply_markup=await main_menu_keyboard(message.from_user.id))
     await state.clear()
+
+
+@router.message(lambda message: "Отменить заказ" in message.text)
+async def cancel_order_by_user(message: types.Message):
+    async with async_sessionmaker() as session:
+        try:
+            # Ищем ВСЕ активные заказы
+            orders = await session.execute(
+                select(Order)
+                .join(User)
+                .where(
+                    User.telegram_id == message.from_user.id,
+                    Order.status != "Исполнено"
+                )
+            )
+            orders = orders.scalars().all()
+
+            if not orders:
+                await message.answer("❌ Нет активных заказов для отмены")
+                return
+
+            # Получаем данные пользователя
+            user = await session.execute(
+                select(User).where(User.telegram_id == message.from_user.id)
+            )
+            user = user.scalar_one_or_none()
+
+            if not user:
+                await message.answer("❌ Ошибка: данные пользователя не найдены")
+                return
+
+            # Удаляем все активные заказы
+            for order in orders:
+                await session.delete(order)
+            await session.commit()
+
+            # Уведомление пользователя
+            await message.answer(
+                "✅ Все ваши активные заказы отменены!",
+                reply_markup=await main_menu_keyboard(message.from_user.id)
+            )
+
+            # Уведомление администраторам
+            for admin_id in ADMIN_IDS:
+                try:
+                    await message.bot.send_message(
+                        admin_id,
+                        f"⚠️ Пользователь @{message.from_user.username} "
+                        f"отменил {len(orders)} заказ(а)!\n"
+                        f"👤 Имя: {user.name}\n"
+                        f"📞 Телефон: {user.phone}\n"
+                        f"🕒 Время: {datetime.now(MOSCOW_TZ).strftime('%d.%m.%Y %H:%M')}"
+                    )
+                except Exception as e:
+                    logging.error(f"Ошибка уведомления админа: {e}")
+
+        except Exception as e:
+            logging.error(f"Ошибка отмены заказа: {e}")
+            await message.answer("❌ Произошла ошибка при отмене заказа")
